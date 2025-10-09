@@ -76,6 +76,67 @@ func (node BNode) setHeader(btype uint16, nkeys uint16) {
 	binary.LittleEndian.PutUint16(node[2:4], nkeys)
 }
 
+// pointers
+func (node BNode) getPtr(idx uint16) uint64 {
+	if idx >= node.nkeys() {
+		panic("Index out of bounds")
+	}
+	pos := HEADER + 8*idx
+	return binary.LittleEndian.Uint64(node[pos:])
+}
+
+func (node BNode) setPtr(idx uint16, val uint64) {
+	if idx >= node.nkeys() {
+		panic("Index out of bounds")
+	}
+	pos := HEADER + 8*idx
+	binary.LittleEndian.PutUint64(node[pos:pos+9], val)
+}
+
+// offset list
+// finds where the offset data is located in the node
+func offsetPos(node BNode, idx uint16) uint16 {
+	if idx < 1 || idx > node.nkeys() {
+		panic("Index out of bounds")
+	}
+	return HEADER + 8*node.nkeys() + 2*(idx-1)
+}
+
+// retrieves the offset data
+func (node BNode) getOffset(idx uint16) uint16 {
+	if idx == 0 {
+		return 0
+	}
+	return binary.LittleEndian.Uint16(node[offsetPos(node, idx):])
+}
+
+func (node BNode) setOffset(idx uint16, offset uint16) 
+
+// key-values
+// returns position of the nth KV pair relative to whole node
+func (node BNode) kvPos(idx uint16) uint16 {
+	if idx > node.nkeys() {
+		panic("Index out of bounds")
+	}
+	return HEADER + 8*node.nkeys() + 2*node.nkeys() + node.getOffset(idx)
+}
+
+func (node BNode) getKey(idx uint16) []byte {
+	if idx >= node.nkeys() {
+		panic("Index out of bounds")
+	}
+	pos := node.kvPos(idx)
+	klen := binary.LittleEndian.Uint16(node[pos:])
+	return node[pos+4:][:klen]
+}
+
+func (node BNode) getVal(idx uint16) []byte
+
+// node size in bytes
+func (node BNode) nbytes() uint16 {
+	return node.kvPos(node.nkeys())
+}
+
 func main() {
 	test_node := BNode(make([]byte, HEADER))
 
