@@ -176,6 +176,7 @@ func leafInsert(new BNode, old BNode, idx uint16, key []byte, val []byte) {
 	nodeAppendRange(new, old, idx + 1, idx, old.nkeys()-idx) // All keys from old after position idx
 }
 
+// Inserts (key, val) at position idx
 func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 	new.setPtr(idx, ptr)
 
@@ -208,6 +209,78 @@ func nodeAppendRange(new BNode, old BNode, dstNew uint16, srcOld uint16, n uint1
 	begin := old.kvPos(srcOld)
 	end := old.kvPos(srcOld + n)
 	copy(new[new.kvPos(dstNew):], old[begin:end])
+}
+
+// update internal nodes
+// rebuilds an internal node by replacing one of its child pointers idx with one or more child nodes (kids)
+func nodeReplaceKidN(tree *BTREE, new BNode, old BNode, idx uint16, kids ...BNode) {
+	inc := uint16(len(kids)) // Number of child nodes that will replace one existing child
+	new.setHeader(BNODE_NODE, old.nkeys() + inc - 1)
+	nodeAppendRange(new, old, 0, 0, idx)
+	for i, node := range kids {
+		// For each new child node allocate a new page, return the first key in that child node (becomes seperator key), set val to nil because its an internal node
+		nodeAppendKV(new, idx + uint16(i), tree.new(node), node.getKey(0), nil)
+		// 				  ^position	    	^pointer		^key           ^val
+	}
+	nodeAppendRange(new, old, idx + inc, idx + 1, old.nkeys() - (idx + 1))
+}
+
+// split nodes
+
+func nodeSplit2(left BNode, right BNode, old BNode) {
+	nkeys := old.nkeys()
+	btype := old.btype()
+
+	// Find the midpoint (split index)
+	var total uint16
+	var mid uint16
+	for i := uint16(0); i < nkeys; i++ {
+		// Calculate size of this key/value pair
+		size := old.kvPos(i+1) - old.kvPos(i)
+		if total+size+HEADER+8*(i+1)+2*(i+1) > BTREE_PAGE_SIZE/2 && i > 0 {
+			mid = i
+			break
+		}
+		total += size
+	}
+	// If we never exceeded the midpoint, split at half
+	if mid == 0 {
+		mid = nkeys / 2
+	}
+
+	// --- Build left node ---
+	left.setHeader(btype, mid)
+	nodeAppendRange(left, old, 0, 0, mid)
+
+	// --- Build right node ---
+	right.setHeader(btype, nkeys-mid)
+	nodeAppendRange(right, old, 0, mid, nkeys-mid)
+}
+
+// split a node if its too big. the results are 1-3 nodes
+func nodeSplit3(old BNode) (uint16, [3]BNode) {
+	if old.nbytes() <= BTREE_PAGE_SIZE {
+		old = old[:BTREE_PAGE_SIZE]
+		return 1, [3]BNode{old} // not split
+	}
+
+	left := BNode(make([]byte, 2*BTREE_PAGE_SIZE)) // might be split later
+	right := BNode(make([]byte, BTREE_PAGE_SIZE))
+	nodeSplit2(left, right, old)
+
+	if left.nbytes() <= BTREE_PAGE_SIZE {
+		left = left[:BTREE_PAGE_SIZE]
+		return 2, [3]BNode{left, right} // 2 nodes
+	}
+
+	leftleft := BNode(make([]byte, BTREE_PAGE_SIZE))
+	middle := BNode(make([]byte, BTREE_PAGE_SIZE))
+	nodeSplit2(leftleft, middle, left)
+
+	if  leftleft.nbytes() > BTREE_PAGE_SIZE {
+		panic("Original node cannot be split into 3 (too large)")
+	}
+	return 3, [3]BNode{leftleft, middle, right} // 3 nodes
 }
 
 func main() {
