@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 )
@@ -90,7 +91,7 @@ func (node BNode) setPtr(idx uint16, val uint64) {
 		panic("Index out of bounds")
 	}
 	pos := HEADER + 8*idx
-	binary.LittleEndian.PutUint64(node[pos:pos+9], val)
+	binary.LittleEndian.PutUint64(node[pos:], val)
 }
 
 // offset list
@@ -110,7 +111,9 @@ func (node BNode) getOffset(idx uint16) uint16 {
 	return binary.LittleEndian.Uint16(node[offsetPos(node, idx):])
 }
 
-func (node BNode) setOffset(idx uint16, offset uint16) 
+func (node BNode) setOffset(idx uint16, offset uint16) {
+	binary.LittleEndian.PutUint16(node[offsetPos(node, idx):], offset)
+}
 
 // key-values
 // returns position of the nth KV pair relative to whole node
@@ -127,14 +130,84 @@ func (node BNode) getKey(idx uint16) []byte {
 	}
 	pos := node.kvPos(idx)
 	klen := binary.LittleEndian.Uint16(node[pos:])
-	return node[pos+4:][:klen]
+	return node[pos + 4:][:klen]
 }
 
-func (node BNode) getVal(idx uint16) []byte
+func (node BNode) getVal(idx uint16) []byte {
+	if idx >= node.nkeys() {
+		panic("Index out of bounds")
+	}
+	pos := node.kvPos(idx)
+	klen := binary.LittleEndian.Uint16(node[pos:])
+	vlen := binary.LittleEndian.Uint16(node[pos + 2:])
+	return node[pos + 4 + klen:][:vlen]
+}
 
 // node size in bytes
 func (node BNode) nbytes() uint16 {
 	return node.kvPos(node.nkeys())
+}
+
+// goes through all keys in a node and finds the largest key that is less than or equal to given key
+// allows us to figure out where to go next (which child page to follow)
+func nodeLookupLE(node BNode, key []byte) uint16 {
+	nkeys := node.nkeys()
+	found := uint16(0)
+
+	for i := uint16(1); i < nkeys; i++ {
+		cmp := bytes.Compare(node.getKey(i), key)
+		if cmp <= 0 {
+			found = i
+		}
+		if cmp >= 0 {
+			break
+		}
+	}
+	return found
+}
+
+// Update B+tree nodes
+
+// add a new key to a leaf node
+func leafInsert(new BNode, old BNode, idx uint16, key []byte, val []byte) {
+	new.setHeader(BNODE_LEAF, old.nkeys() + 1)
+	nodeAppendRange(new, old, 0, 0, idx) // All keys from old before position idx
+	nodeAppendKV(new, idx, 0, key, val) // New (key, val) inserted at position idx
+	nodeAppendRange(new, old, idx + 1, idx, old.nkeys()-idx) // All keys from old after position idx
+}
+
+func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
+	new.setPtr(idx, ptr)
+
+	pos := new.kvPos(idx)
+	binary.LittleEndian.PutUint16(new[pos + 0:], uint16(len(key)))
+	binary.LittleEndian.PutUint16(new[pos + 2:], uint16(len(val)))
+	copy(new[pos + 4:], key)
+	copy(new[pos + 4 + uint16(len(key)):], val)
+
+	new.setOffset(idx + 1, new.getOffset(idx) + 4 + uint16((len(key) + len(val))))
+}
+
+func nodeAppendRange(new BNode, old BNode, dstNew uint16, srcOld uint16, n uint16) {
+	if n == 0 {
+		return
+	}
+
+	// pointers
+	for i := uint16(0); i < n; i++ {
+		new.setPtr(dstNew+i, old.getPtr(srcOld+i))
+	}
+	// offsets
+	dstBegin := new.getOffset(dstNew)
+	srcBegin := old.getOffset(srcOld)
+	for i := uint16(1); i <= n; i++ { // NOTE: the range is [1, n]
+		offset := dstBegin + old.getOffset(srcOld+i) - srcBegin
+		new.setOffset(dstNew+i, offset)
+	}
+	// KVs
+	begin := old.kvPos(srcOld)
+	end := old.kvPos(srcOld + n)
+	copy(new[new.kvPos(dstNew):], old[begin:end])
 }
 
 func main() {
