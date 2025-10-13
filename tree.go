@@ -50,7 +50,7 @@ func init() {
 // will just be a chunk of bytes to make it easier to move data from memory to disk
 type BNode []byte
 
-type BTREE struct {
+type BTree struct {
 	// pointer (nonzero page number)
 	root uint64
 	// callbacks to manage on-disk pages
@@ -213,7 +213,7 @@ func nodeAppendRange(new BNode, old BNode, dstNew uint16, srcOld uint16, n uint1
 
 // update internal nodes
 // rebuilds an internal node by replacing one of its child pointers idx with one or more child nodes (kids)
-func nodeReplaceKidN(tree *BTREE, new BNode, old BNode, idx uint16, kids ...BNode) {
+func nodeReplaceKidN(tree *BTree, new BNode, old BNode, idx uint16, kids ...BNode) {
 	inc := uint16(len(kids)) // Number of child nodes that will replace one existing child
 	new.setHeader(BNODE_NODE, old.nkeys() + inc - 1)
 	nodeAppendRange(new, old, 0, 0, idx)
@@ -281,6 +281,44 @@ func nodeSplit3(old BNode) (uint16, [3]BNode) {
 		panic("Original node cannot be split into 3 (too large)")
 	}
 	return 3, [3]BNode{leftleft, middle, right} // 3 nodes
+}
+
+// full b+tree insertion 
+func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
+	new := BNode(make([]byte, 2*BTREE_PAGE_SIZE))
+
+	idx := nodeLookupLE(node, key) // Find insert position
+
+	switch node.btype() {
+	case BNODE_LEAF:
+		if bytes.Equal(key, node.getKey(idx)) {
+			leafUpdate(new, node, idx, key, val)
+		} else {
+			leafInsert(new, node, idx + 1, key, val)
+		}
+	case BNODE_NODE:
+		nodeInsert(tree, new, node, idx, key, val) // If it is an internal node then recurse downwards
+	default:
+		panic("Bad node!")
+	}
+	return new
+}
+
+// update existing key 
+func leafUpdate(new BNode, old BNode, idx uint16, key []byte, val []byte) {
+	new.setHeader(BNODE_LEAF, old.nkeys())
+	nodeAppendRange(new, old, 0, 0, idx) // copy everything from old node to new up until index
+	nodeAppendKV(new, idx, 0, key, val) // add new kv to new node
+	nodeAppendRange(new, old, idx+1, idx+1, old.nkeys()-(idx+1)) // copy everything remaining from index of old to new node starting after the inserted kv
+}
+
+// Call this function when dealing with an internal node
+func nodeInsert(tree *BTree, new BNode, node BNode, idx uint16, key []byte, val []byte) {
+	kptr := node.getPtr(idx) // Get ptr to child notde
+	knode := treeInsert(tree, tree.get(kptr), key, val) // Insert into child node and return updated node
+	nsplit, split := nodeSplit3(knode) // If it needs to be split
+	tree.del(kptr) // Delete the old ptr
+	nodeReplaceKidN(tree, new, node, idx, split[:nsplit]...) // Replace the ptr with the split up nodes
 }
 
 func main() {
